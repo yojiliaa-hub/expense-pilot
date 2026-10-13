@@ -53,6 +53,9 @@ def classify(path):
     d=fitz.open(path)
     t=unicodedata.normalize("NFKC","\n".join(d[i].get_text("text") for i in range(min(2,len(d)))))
     fn=unicodedata.normalize("NFKC",Path(path).name)
+    # v1.9: ゴルフパートナー月次内訳はPDF内で帳票レイアウトが変わる複合形式
+    if "ゴルフパートナー" in t and ("商材仕入明細書" in t or "PBインセンティブ" in t or "什器販売" in t):
+        return "GP_MULTI"
     if "BAN" in fn.upper() or "バンディット" in t or "BANDIT" in t.upper():
         return "BAN"
     if "サンテン" in fn or "サンテン" in t or "SANTEN-CORP.COM" in t.upper():
@@ -152,6 +155,97 @@ def merge_discount_rows(rows, discount_rows):
 def discount_total(rows):
     vals=[r[6] for r in rows if r[6] is not None and ("値引" in f"{r[0] or ''}{r[1] or ''}" or "割引" in f"{r[0] or ''}{r[1] or ''}")]
     return sum(vals) if vals else None
+
+
+def parse_gp_multi(path):
+    """ゴルフパートナー月次内訳の複合PDFをページ単位で解析する。"""
+    d=fitz.open(path); rows=[]
+
+    def page_lines(page):
+        groups=[]
+        for w in page.get_text("words"):
+            x0,y0,x1,y1,t,*_=w
+            for g in groups:
+                if abs(g["y"]-y0)<=2.1:
+                    g["w"].append((x0,x1,t)); break
+            else:
+                groups.append({"y":y0,"w":[(x0,x1,t)]})
+        return sorted(groups,key=lambda z:z["y"])
+
+    def page_context(page):
+        txt=unicodedata.normalize("NFKC",page.get_text("text"))
+        m=re.search(r"(\d{3,4})\s+([^\n]+?店)\s*御中",txt)
+        store=(f"{m.group(1)} {clean(m.group(2))}" if m else None)
+        known=["商材仕入明細書","PBインセンティブ明細書","什器販売 明細書",
+               "店舗備品 明細書","ゴルフシュミレーター販売 明細書",
+               "オープン販促 明細書","オープンツール 明細書"]
+        title=next((k for k in known if k in txt),None)
+        if not title:
+            candidates=[]
+            for line in txt.splitlines():
+                q=clean(line)
+                if not q or q.startswith("Page") or q in {"出力日","株式会社 ゴルフパートナー","株式会社ゴルフパートナー"}:
+                    continue
+                if any(x in q for x in ["明細項目","登録番号","対象期間","税込合計","消費税","株式会社文苑堂書店","御中"]):
+                    continue
+                if ("【" in q or "明細" in q or "送料" in q or "ポイント" in q) and len(q)<60:
+                    candidates.append(q)
+            title=candidates[-1] if candidates else "ゴルフパートナー明細"
+        return store,title
+
+    for pno,page in enumerate(d):
+        lines=page_lines(page)
+        store,title=page_context(page)
+        header=None
+        for g in lines:
+            full=unicodedata.normalize("NFKC"," ".join(t for _,_,t in sorted(g["w"])))
+            if ("日付" in full or "検品日" in full or "出荷日" in full) and ("金額" in full or "合計額" in full):
+                header=g; break
+        if header is None:
+            continue
+
+        h=[]
+        for x0,x1,t in sorted(header["w"]):
+            nt=unicodedata.normalize("NFKC",clean(t)).replace(" ","")
+            h.append(((x0+x1)/2,nt))
+        if not h: continue
+
+        def canon(label):
+            if label in {"日付","検品日","出荷日"}: return "date"
+            if label in {"商品名","明細項目","内容"}: return "name"
+            if label in {"数量","出荷数量","検品数"}: return "qty"
+            if "単価" in label: return "price"
+            if "合計額" in label: return "amount_total"
+            if "送料" in label and "税抜" in label: return "shipping"
+            if "金額" in label: return "amount"
+            if label in {"摘要","備考"}: return "remark"
+            return label
+
+        anchors=[(x,canon(t)) for x,t in h]
+        date_re=re.compile(r"20\d{2}年\d{1,2}月\d{1,2}日")
+        for g in lines:
+            if g["y"] <= header["y"]+4: continue
+            full=unicodedata.normalize("NFKC"," ".join(t for _,_,t in sorted(g["w"])))
+            if not date_re.search(full): continue
+            buckets={}
+            for x0,x1,t in sorted(g["w"]):
+                cx=(x0+x1)/2
+                _,lab=min(anchors,key=lambda z:abs(z[0]-cx))
+                buckets.setdefault(lab,[]).append((x0,t))
+            def btxt(*labs):
+                for lab in labs:
+                    vals=buckets.get(lab)
+                    if vals: return clean(" ".join(t for _,t in sorted(vals)))
+                return None
+            name=btxt("name") or title
+            qty=nval(btxt("qty")); price=nval(btxt("price"))
+            amount=nval(btxt("amount_total","amount"))
+            remark=btxt("remark"); shipping=nval(btxt("shipping"))
+            if amount is None and shipping is not None: amount=shipping
+            if amount is None: continue
+            rows.append([title,name,store,qty,None,price,amount,remark,pno+1])
+    return rows,None,None,None
+
 
 def parse_ban(path):
     d=fitz.open(path); rows=[]
@@ -414,7 +508,8 @@ if uploads:
                 p=Path(td)/u.name
                 p.write_bytes(u.getvalue())
                 typ=classify(str(p))
-                if typ=="BAN": rows,total,pretax,tax=parse_ban(str(p))
+                if typ=="GP_MULTI": rows,total,pretax,tax=parse_gp_multi(str(p))
+                elif typ=="BAN": rows,total,pretax,tax=parse_ban(str(p))
                 elif typ=="SANTEN": rows,total,pretax,tax=parse_santen(str(p))
                 else: rows,total,pretax,tax=parse_himi(str(p))
                 # v1.8: 表紙/サマリーにだけ存在する値引・割引も明細へ反映
