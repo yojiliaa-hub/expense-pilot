@@ -171,23 +171,23 @@ def parse_fujifilm(path):
         def money(pattern):
             m=re.search(pattern,txt)
             return int(m.group(1).replace(",","")) if m else None
-        pretax=money(r"【代金/料金合計】\\s*([\\d,]+)")
-        tax=money(r"【消費税および地方消費税\\(10%\\)】\\s*([\\d,]+)")
-        total=money(r"【今回ご請求額】\\s*([\\d,]+)")
+        pretax=money(r"【代金/料金合計】\s*([\d,]+)")
+        tax=money(r"【消費税および地方消費税\(10%\)】\s*([\d,]+)")
+        total=money(r"【今回ご請求額】\s*([\d,]+)")
         if pretax is not None: pretax_sum+=pretax; has_pretax=True
         if tax is not None: tax_sum+=tax; has_tax=True
         if total is not None: total_sum+=total; has_total=True
 
         store=None
-        m=re.search(r"設置先[:：]\\s*([^\\n]+)",txt)
+        m=re.search(r"設置先[:：]\s*([^\n]+)",txt)
         if m:
             store=clean(m.group(1))
-            store=re.sub(r"^株式会社\\s*文苑堂書店\\s*","",store).strip() or store
+            store=re.sub(r"^株式会社\s*文苑堂書店\s*","",store).strip() or store
         machine=None
-        m=re.search(r"ご利用機種/機械番号[:：]\\s*([^\\n]+)",txt)
+        m=re.search(r"ご利用機種/機械番号[:：]\s*([^\n]+)",txt)
         if m: machine=clean(m.group(1))
         period=None
-        m=re.search(r"(20\\d{2}/\\d{2}/\\d{2})-(20\\d{2}/\\d{2}/\\d{2})",txt)
+        m=re.search(r"(20\d{2}/\d{2}/\d{2})-(20\d{2}/\d{2}/\d{2})",txt)
         if m: period=f"{m.group(1)}-{m.group(2)}"
 
         item="トータルサービス料金" if "トータルサービス料金" in txt else "富士フイルムサービス料金"
