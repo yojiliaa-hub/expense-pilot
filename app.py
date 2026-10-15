@@ -551,7 +551,8 @@ if uploads:
                 p=Path(td)/u.name
                 p.write_bytes(u.getvalue())
                 typ=classify(str(p))
-                if typ=="GP_MULTI": rows,total,pretax,tax=parse_gp_multi(str(p))
+                if typ=="FUJIFILM": rows,total,pretax,tax=parse_fujifilm(str(p))
+                elif typ=="GP_MULTI": rows,total,pretax,tax=parse_gp_multi(str(p))
                 elif typ=="BAN": rows,total,pretax,tax=parse_ban(str(p))
                 elif typ=="SANTEN": rows,total,pretax,tax=parse_santen(str(p))
                 else: rows,total,pretax,tax=parse_himi(str(p))
