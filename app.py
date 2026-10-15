@@ -159,6 +159,47 @@ def discount_total(rows):
     return sum(vals) if vals else None
 
 
+def parse_fujifilm(path):
+    """富士フイルム月次請求書: 1ページ=1設置先として料金合計を抽出。"""
+    d=fitz.open(path); rows=[]
+    total_sum=pretax_sum=tax_sum=0
+    has_total=has_pretax=has_tax=False
+    for pno,page in enumerate(d):
+        txt=unicodedata.normalize("NFKC",page.get_text("text"))
+        if "今回ご請求額" not in txt or "代金/料金合計" not in txt:
+            continue
+        def money(pattern):
+            m=re.search(pattern,txt)
+            return int(m.group(1).replace(",","")) if m else None
+        pretax=money(r"【代金/料金合計】\\s*([\\d,]+)")
+        tax=money(r"【消費税および地方消費税\\(10%\\)】\\s*([\\d,]+)")
+        total=money(r"【今回ご請求額】\\s*([\\d,]+)")
+        if pretax is not None: pretax_sum+=pretax; has_pretax=True
+        if tax is not None: tax_sum+=tax; has_tax=True
+        if total is not None: total_sum+=total; has_total=True
+
+        store=None
+        m=re.search(r"設置先[:：]\\s*([^\\n]+)",txt)
+        if m:
+            store=clean(m.group(1))
+            store=re.sub(r"^株式会社\\s*文苑堂書店\\s*","",store).strip() or store
+        machine=None
+        m=re.search(r"ご利用機種/機械番号[:：]\\s*([^\\n]+)",txt)
+        if m: machine=clean(m.group(1))
+        period=None
+        m=re.search(r"(20\\d{2}/\\d{2}/\\d{2})-(20\\d{2}/\\d{2}/\\d{2})",txt)
+        if m: period=f"{m.group(1)}-{m.group(2)}"
+
+        item="トータルサービス料金" if "トータルサービス料金" in txt else "富士フイルムサービス料金"
+        notes=[]
+        if period: notes.append(f"対象期間: {period}")
+        if machine: notes.append(f"機種/機械番号: {machine}")
+        remark=" / ".join(notes) if notes else None
+        if pretax is not None:
+            rows.append(["富士フイルム請求書",item,store,1,"式",pretax,pretax,remark,pno+1])
+    return rows,(total_sum if has_total else None),(pretax_sum if has_pretax else None),(tax_sum if has_tax else None)
+
+
 def parse_gp_multi(path):
     """ゴルフパートナー月次内訳の複合PDFをページ単位で解析する。"""
     d=fitz.open(path); rows=[]
