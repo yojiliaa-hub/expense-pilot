@@ -54,6 +54,8 @@ def classify(path):
     t=unicodedata.normalize("NFKC","\n".join(d[i].get_text("text") for i in range(min(2,len(d)))))
     fn=unicodedata.normalize("NFKC",Path(path).name)
     # v1.9: ゴルフパートナー月次内訳はPDF内で帳票レイアウトが変わる複合形式
+    if ("FUJIFILM" in t.upper() or "富士フイルム" in t) and "今回ご請求額" in t:
+        return "FUJIFILM"
     if "ゴルフパートナー" in t and ("商材仕入明細書" in t or "PBインセンティブ" in t or "什器販売" in t):
         return "GP_MULTI"
     if "BAN" in fn.upper() or "バンディット" in t or "BANDIT" in t.upper():
