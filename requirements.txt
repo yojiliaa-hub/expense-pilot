@@ -1,3 +1,6 @@
 streamlit
 PyMuPDF
 openpyxl
+
+pytesseract
+Pillow
