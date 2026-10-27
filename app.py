@@ -2,6 +2,8 @@
 import io, os, re, tempfile, unicodedata
 from pathlib import Path
 import fitz
+import pytesseract
+from PIL import Image
 import streamlit as st
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
@@ -426,8 +428,135 @@ def parse_ban(path):
                 tax=x; pretax=total-x; break
     return rows,total,pretax,tax
 
+def _ocr_santen_tokens(page, scale=3):
+    """画像化されたSANTENページを座標付きOCRへ変換。文字PDFでは呼ばない。"""
+    pix=page.get_pixmap(matrix=fitz.Matrix(scale,scale),alpha=False)
+    img=Image.frombytes("RGB",[pix.width,pix.height],pix.samples)
+    data=pytesseract.image_to_data(
+        img,lang="jpn+eng",config="--psm 11",output_type=pytesseract.Output.DICT
+    )
+    out=[]
+    for i,t in enumerate(data["text"]):
+        t=clean(t)
+        if not t: continue
+        try: conf=float(data["conf"][i])
+        except: conf=0
+        if conf < 25: continue
+        x0=data["left"][i]/scale; y0=data["top"][i]/scale
+        x1=(data["left"][i]+data["width"][i])/scale
+        y1=(data["top"][i]+data["height"][i])/scale
+        out.append((x0,y0,x1,y1,t,conf))
+    return out,img,scale
+
+def _ocr_line_groups(tokens,ymin=75,ymax=540,tol=6):
+    groups=[]
+    for x0,y0,x1,y1,t,conf in sorted(tokens,key=lambda w:(w[1],w[0])):
+        if not (ymin <= y0 <= ymax): continue
+        cy=(y0+y1)/2
+        best=None; best_dist=999
+        for g in groups:
+            dist=abs(g["cy"]-cy)
+            if dist <= tol and dist < best_dist:
+                best=g; best_dist=dist
+        if best:
+            best["w"].append((x0,t))
+        else:
+            groups.append({"cy":cy,"w":[(x0,t)]})
+    return sorted(groups,key=lambda g:g["cy"])
+
+def _ocr_money(s):
+    """OCRが 975,000 を 975.000 と読むケースを金額として補正。"""
+    if not s: return None
+    s=unicodedata.normalize("NFKC",str(s)).replace("O","0").replace("o","0")
+    m=re.search(r"-?\d[\d,.]*",s)
+    if not m: return None
+    z=m.group(0).strip(".,")
+    if re.fullmatch(r"-?\d{1,3}(?:\.\d{3})+",z):
+        z=z.replace(".",",")
+    try: return int(float(z.replace(",","")))
+    except: return None
+
+def _ocr_cell_name(img,scale,cy):
+    """通常OCRで項目名だけ落ちた行を、そのセルだけ再OCRする。"""
+    y0=max(0,int((cy-10)*scale)); y1=min(img.height,int((cy+10)*scale))
+    crop=img.crop((int(82*scale),y0,int(255*scale),y1))
+    try:
+        return clean(pytesseract.image_to_string(
+            crop,lang="jpn+eng",config="--psm 6"
+        ))
+    except:
+        return None
+
+def _parse_santen_image_pdf(d):
+    """文字レイヤーが無いSANTEN画像PDFのフォールバック。"""
+    rows=[]
+    ocr=[]
+    for page in d:
+        tokens,img,scale=_ocr_santen_tokens(page)
+        ocr.append((tokens,img,scale))
+
+    # 2ページ目の工種サマリーを大項目名として利用。
+    # OCRで欠けた工種は各明細ページ上部から補完する。
+    sections=[]
+    if len(d)>=2:
+        for g in _ocr_line_groups(ocr[1][0],190,520,7):
+            ws=sorted(g["w"])
+            name=clean(" ".join(t for x,t in ws if 82<=x<430))
+            amt=_ocr_money(clean(" ".join(t for x,t in ws if 580<=x<680)))
+            if name and amt and "総合計" not in name and "値引" not in name:
+                sections.append(name)
+
+    page_titles={}
+    for pno in range(2,len(d)):
+        tokens,img,scale=ocr[pno]
+        crop=img.crop((int(55*scale),int(35*scale),int(430*scale),int(78*scale)))
+        try:
+            title=clean(pytesseract.image_to_string(
+                crop,lang="jpn+eng",config="--psm 6"
+            ))
+        except:
+            title=None
+        if title:
+            title=re.sub(r"^[|\s]*\d+\s*[|｜]?\s*","",title).strip()
+            if title: page_titles[pno]=title
+
+    cols={"name":(82,255),"spec":(255,442),"qty":(442,490),"unit":(490,535),
+          "price":(535,620),"amount":(620,675),"remark":(675,800)}
+    for pno in range(2,len(d)):
+        tokens,img,scale=ocr[pno]
+        current=(sections[pno-2] if pno-2<len(sections) else None) or page_titles.get(pno) or f"明細{pno-1}"
+        for g in _ocr_line_groups(tokens,75,540,6):
+            ws=sorted(g["w"])
+            c={k:clean(" ".join(t for x,t in ws if lo<=x<hi)) or None
+               for k,(lo,hi) in cols.items()}
+            amount=_ocr_money(c["amount"])
+            if amount is None: continue
+            name=c["name"]
+            if not name:
+                name=_ocr_cell_name(img,scale,g["cy"])
+            if not name or name in {"名称","合計","総合計"}: continue
+            qty=nval(c["qty"]); price=_ocr_money(c["price"])
+            rows.append([current,name,c["spec"],qty,c["unit"],price,amount,c["remark"],pno+1])
+
+    # 表紙/サマリーの見積額はOCR上の最大金額を採用（SANTEN税別見積）。
+    pretax=None
+    if len(d)>=2:
+        vals=[]
+        for x0,y0,x1,y1,t,conf in ocr[1][0]:
+            v=_ocr_money(t)
+            if isinstance(v,(int,float)) and v>=1000: vals.append(v)
+        pretax=max(vals) if vals else None
+    return rows,None,pretax,None
+
 def parse_santen(path):
     d=fitz.open(path); rows=[]
+
+    # 画像PDF判定：2ページ目以降に文字レイヤーがほぼ無い場合だけOCRへ。
+    # 通常のSANTEN PDFは従来どおり高速な座標抽出を使う。
+    image_pages=sum(1 for p in d[1:] if len(p.get_text("words"))<20)
+    if len(d)>=3 and image_pages >= max(1,len(d)-2):
+        return _parse_santen_image_pdf(d)
+
     if len(d)<=2:
         text=unicodedata.normalize("NFKC",d[1].get_text("text"))
         if "4tトラック" in text and "倉庫賃料" in text:
@@ -438,22 +567,56 @@ def parse_santen(path):
     else:
         cols={"name":(82,255),"spec":(255,442),"qty":(442,490),"unit":(490,535),
               "price":(535,620),"amount":(620,700),"remark":(700,790)}
+
+        # ページ見出しを先に走査。
+        # 「K 電気設備工事」の次に「1 分電盤…」のようなページが続く場合は
+        # 親 > 子 の階層として保持し、親ページ側の集計行は二重計上しない。
+        titles={}; active_major=None; child_titles={}
         for pno in range(2,len(d)):
-            top=sorted([w for w in d[pno].get_text("words") if 34<=w[1]<=62],key=lambda w:w[0])
+            page=d[pno]
+            top=sorted([w for w in page.get_text("words") if 30<=w[1]<=70],key=lambda w:w[0])
             top_no=clean(" ".join(w[4] for w in top if w[0]<82))
             top_name=clean(" ".join(w[4] for w in top if 82<=w[0]<440))
-            current=f"{top_no} {top_name}".strip() if top_name else None
-            for g in group_lines(d[pno],86,500):
+            if re.fullmatch(r"[A-Z]",top_no or ""):
+                active_major=f"{top_no} {top_name}".strip()
+                titles[pno]=(active_major,None)
+            elif (top_no or "").isdigit() and top_name and active_major:
+                child=f"{top_no} {top_name}".strip()
+                titles[pno]=(active_major,child)
+                child_titles.setdefault(active_major,set()).add(clean(top_name))
+            else:
+                titles[pno]=(active_major,None)
+
+        for pno in range(2,len(d)):
+            page=d[pno]
+            major,child=titles.get(pno,(None,None))
+            current=f"{major} ＞ {child}" if major and child else major
+
+            # v2.0: 500ptより下にも明細がある帳票に対応（合計行の直前まで）。
+            for g in group_lines(page,86,540):
                 ws=sorted(g["w"])
-                c={k:clean(" ".join(t for x,t in ws if lo<=x<hi)) or None for k,(lo,hi) in cols.items()}
-                if not c["name"] or c["name"] in {"合計","小計","総合計","名称","No.","Page."}: continue
+                c={k:clean(" ".join(t for x,t in ws if lo<=x<hi)) or None
+                   for k,(lo,hi) in cols.items()}
+                if not c["name"] or c["name"] in {"合計","小計","総合計","名称","No.","Page."}:
+                    continue
+
+                # 専用の詳細ページが存在する親集計行は除外。
+                if child is None and major and clean(c["name"]) in child_titles.get(major,set()):
+                    continue
+
                 amount=nval(c["amount"])
                 remark=c["remark"]
                 tail_note=numeric_tail_note(c["amount"]) if amount is not None else None
                 if tail_note:
                     remark=f"{remark} / {tail_note}" if remark else tail_note
-                rows.append([current,c["name"],c["spec"],nval(c["qty"]),c["unit"],
-                             nval(c["price"]),amount,remark,pno+1])
+
+                qty=nval(c["qty"]); price=nval(c["price"])
+                # 【分電盤・幹線工事】等の見出し行は費用明細にはしない。
+                if amount is None and qty is None and price is None:
+                    continue
+                rows.append([current,c["name"],c["spec"],qty,c["unit"],
+                             price,amount,remark,pno+1])
+
     text=unicodedata.normalize("NFKC","\n".join(d[i].get_text("text") for i in range(min(2,len(d)))))
     m=re.search(r"[￥¥]\s*([\d,]+)\s*也",text)
     pretax=int(m.group(1).replace(",","")) if m else None
