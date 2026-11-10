@@ -60,7 +60,7 @@ def classify(path):
         return "FUJIFILM"
     if "ゴルフパートナー" in t and ("商材仕入明細書" in t or "PBインセンティブ" in t or "什器販売" in t):
         return "GP_MULTI"
-    if "BAN" in fn.upper() or "バンディット" in t or "BANDIT" in t.upper():
+    if "コスモデザイン" in t or "コスモデザイン" in fn: return "COSMO"\n    if "BAN" in fn.upper() or "バンディット" in t or "BANDIT" in t.upper():
         return "BAN"
     if "サンテン" in fn or "サンテン" in t or "SANTEN-CORP.COM" in t.upper():
         return "SANTEN"
@@ -622,6 +622,86 @@ def parse_santen(path):
     pretax=int(m.group(1).replace(",","")) if m else None
     return rows,None,pretax,None
 
+
+def parse_cosmo(path):
+    """コスモデザイン企画: 横向き設計費/階層型什器見積の両方に対応。"""
+    d=fitz.open(path); rows=[]; summary_discounts=[]
+    sections={}
+    if len(d)>2:
+        # 2ページ目は集計表。A/B/Cは詳細ページに展開し、D/E値引のみ採用。
+        for g in group_lines(d[1],155,330):
+            ws=sorted(g["w"])
+            name=clean(" ".join(t for x,t in ws if 45<=x<295))
+            amt=nval(clean(" ".join(t for x,t in ws if 640<=x<710)))
+            m=re.match(r"^([Ａ-ＥA-E])\s*[.．]\s*(.+)",name)
+            if m:
+                key=unicodedata.normalize("NFKC",m.group(1))
+                if key in {"A","B","C"}: sections[key]=name
+                elif key in {"D","E"} and amt is not None:
+                    summary_discounts.append(["値引・割引",name,None,1,"式",None,-abs(amt),None,2])
+
+    current=None; subsection=None
+    for pno in range(1,len(d)):
+        page=d[pno]
+        # 回転90度の見積もりはPyMuPDFのword座標が未回転なので座標変換する。
+        if page.rotation==90:
+            pw=page.mediabox.height
+            words=[(pw-w[3],w[0],pw-w[1],w[2],w[4]) for w in page.get_text("words")]
+            bounds={"name":(45,280),"spec":(280,415),"unit":(415,480),
+                    "qty":(480,550),"price":(550,645),"amount":(645,715),"remark":(715,830)}
+        else:
+            words=[w[:5] for w in page.get_text("words")]
+            bounds={"name":(45,255),"spec":(255,415),"unit":(415,480),
+                    "qty":(480,550),"price":(550,645),"amount":(645,710),"remark":(710,830)}
+
+        # 什器他の2ページ目は詳細ページと重複するため除外。
+        if len(d)>2 and pno==1: continue
+        groups=[]
+        for x0,y0,x1,y1,t in words:
+            if not (96<=y0<=525): continue
+            for g in groups:
+                if abs(g["y"]-y0)<=3:
+                    g["w"].append((x0,t)); break
+            else: groups.append({"y":y0,"w":[(x0,t)]})
+        for g in sorted(groups,key=lambda z:z["y"]):
+            ws=sorted(g["w"])
+            col={k:clean(" ".join(t for x,t in ws if lo<=x<hi)) or None
+                 for k,(lo,hi) in bounds.items()}
+            name=col["name"]
+            if not name: continue
+            if "合" in name and "計" in name: continue
+            if name.startswith("【備考】") or name.startswith("次頁"): continue
+            norm=unicodedata.normalize("NFKC",name)
+            sm=re.match(r"^([A-E])[.．]\s*(.+)",norm)
+            if sm:
+                current=sections.get(sm.group(1),name); subsection=None
+                continue
+            if name.startswith("【") and name.endswith("】"):
+                subsection=name
+                continue
+            amount=nval(col["amount"])
+            qty=nval(col["qty"]); price=nval(col["price"])
+            if amount is None and qty is None and price is None:
+                # 「↑天板+棚板」など金額を伴わない説明行は直前の備考に付ける。
+                if rows and (name.startswith("↑") or name.startswith("↑")):
+                    prev=rows[-1]
+                    if prev[8]==pno+1:
+                        prev[7]=f"{prev[7]} / {name}" if prev[7] else name
+                continue
+            if not current: current="設計費" if len(d)==2 else "その他"
+            major=f"{current} ＞ {subsection}" if subsection else current
+            rows.append([major,name,col["spec"],qty,col["unit"],price,amount,col["remark"],pno+1])
+
+    rows.extend(summary_discounts)
+    front=unicodedata.normalize("NFKC",d[0].get_text("text"))
+    def first_money(pattern):
+        m=re.search(pattern,front)
+        return int(m.group(1).replace(",","")) if m else None
+    pretax=first_money(r"税抜合計\s*[:：]\s*[￥¥\\]?\s*([\d,]+)")
+    tax=first_money(r"消費税(?:額|\s*10%)?\s*[:：]?\s*[￥¥\\]?\s*([\d,]+)")
+    total=first_money(r"税込合計\s*[:：]\s*[￥¥\\]?\s*([\d,]+)")
+    return rows,total,pretax,tax
+
 def parse_himi(path):
     d=fitz.open(path); rows=[]; current=None
     cols={"name":(55,258),"spec":(258,423),"unit":(423,480),"qty":(480,560),
@@ -717,7 +797,7 @@ if uploads:
                 if typ=="FUJIFILM": rows,total,pretax,tax=parse_fujifilm(str(p))
                 elif typ=="GP_MULTI": rows,total,pretax,tax=parse_gp_multi(str(p))
                 elif typ=="BAN": rows,total,pretax,tax=parse_ban(str(p))
-                elif typ=="SANTEN": rows,total,pretax,tax=parse_santen(str(p))
+                elif typ=="SANTEN": rows,total,pretax,tax=parse_santen(str(p))\n                elif typ=="COSMO": rows,total,pretax,tax=parse_cosmo(str(p))
                 else: rows,total,pretax,tax=parse_himi(str(p))
                 # v1.8: 表紙/サマリーにだけ存在する値引・割引も明細へ反映
                 rows=merge_discount_rows(rows, extract_discount_rows(str(p)))
