@@ -647,7 +647,7 @@ def parse_cosmo(path):
         if page.rotation==90:
             pw=page.mediabox.height
             words=[(pw-w[3],w[0],pw-w[1],w[2],w[4]) for w in page.get_text("words")]
-            bounds={"name":(45,280),"spec":(280,415),"unit":(415,480),
+            bounds={"name":(45,250),"spec":(250,415),"unit":(415,480),
                     "qty":(480,550),"price":(550,645),"amount":(645,715),"remark":(715,830)}
         else:
             words=[w[:5] for w in page.get_text("words")]
