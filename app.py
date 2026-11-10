@@ -60,7 +60,8 @@ def classify(path):
         return "FUJIFILM"
     if "ゴルフパートナー" in t and ("商材仕入明細書" in t or "PBインセンティブ" in t or "什器販売" in t):
         return "GP_MULTI"
-    if "コスモデザイン" in t or "コスモデザイン" in fn: return "COSMO"\n    if "BAN" in fn.upper() or "バンディット" in t or "BANDIT" in t.upper():
+    if "コスモデザイン" in t or "コスモデザイン" in fn: return "COSMO"
+    if "BAN" in fn.upper() or "バンディット" in t or "BANDIT" in t.upper():
         return "BAN"
     if "サンテン" in fn or "サンテン" in t or "SANTEN-CORP.COM" in t.upper():
         return "SANTEN"
@@ -797,7 +798,8 @@ if uploads:
                 if typ=="FUJIFILM": rows,total,pretax,tax=parse_fujifilm(str(p))
                 elif typ=="GP_MULTI": rows,total,pretax,tax=parse_gp_multi(str(p))
                 elif typ=="BAN": rows,total,pretax,tax=parse_ban(str(p))
-                elif typ=="SANTEN": rows,total,pretax,tax=parse_santen(str(p))\n                elif typ=="COSMO": rows,total,pretax,tax=parse_cosmo(str(p))
+                elif typ=="SANTEN": rows,total,pretax,tax=parse_santen(str(p))
+                elif typ=="COSMO": rows,total,pretax,tax=parse_cosmo(str(p))
                 else: rows,total,pretax,tax=parse_himi(str(p))
                 # v1.8: 表紙/サマリーにだけ存在する値引・割引も明細へ反映
                 rows=merge_discount_rows(rows, extract_discount_rows(str(p)))
