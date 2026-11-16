@@ -558,13 +558,26 @@ def parse_santen(path):
     if len(d)>=3 and image_pages >= max(1,len(d)-2):
         return _parse_santen_image_pdf(d)
 
-    if len(d)<=2:
-        text=unicodedata.normalize("NFKC",d[1].get_text("text"))
-        if "4tトラック" in text and "倉庫賃料" in text:
-            rows=[
-                ["運送費","4tトラック","積み込み、積み下ろし人工共",2,"回",60000,120000,None,2],
-                ["運送費","倉庫賃料","8/27~9/10",1,"式",30000,30000,None,2],
-            ]
+    if len(d)==2:
+        # Short SANTEN quotes: page 2 is the actual itemized table.
+        # The amount column starts near x=590, unlike detailed pages (x=620).
+        page=d[1]
+        header_ys=[w[1] for w in page.get_text("words")
+                   if 180 <= w[1] <= 260 and "番号" in clean(w[4])]
+        header_y=min(header_ys) if header_ys else 211
+        for g in group_lines(page,header_y+8,min(540,page.rect.height-65)):
+            ws=sorted(g["w"])
+            name=clean(" ".join(t for x,t in ws if 90<=x<255))
+            spec=clean(" ".join(t for x,t in ws if 255<=x<440))
+            qty_text=clean(" ".join(t for x,t in ws if 440<=x<490))
+            amount_text=clean(" ".join(t for x,t in ws if 580<=x<690))
+            if not name or name.replace(" ","") in {"合計","総合計","小計"}:
+                continue
+            amount=nval(amount_text)
+            if amount is None: continue
+            qty=nval(qty_text)
+            unit=clean(re.sub(r"^[+-]?\\d+(?:\\.\\d+)?","",qty_text)) or None
+            rows.append(["見積明細",name,spec or None,qty,unit,None,amount,None,2])
     else:
         cols={"name":(82,255),"spec":(255,442),"qty":(442,490),"unit":(490,535),
               "price":(535,620),"amount":(620,700),"remark":(700,790)}
@@ -585,6 +598,10 @@ def parse_santen(path):
                 child=f"{top_no} {top_name}".strip()
                 titles[pno]=(active_major,child)
                 child_titles.setdefault(active_major,set()).add(clean(top_name))
+            elif (top_no or "").isdigit() and top_name:
+                # Short SANTEN quotes use numbered major sections without A-Z parents.
+                active_major=f"{top_no} {top_name}".strip()
+                titles[pno]=(active_major,None)
             else:
                 titles[pno]=(active_major,None)
 
