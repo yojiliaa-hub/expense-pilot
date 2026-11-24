@@ -566,6 +566,13 @@ def _parse_santen_image_pdf(d):
             inferred=False
             if matching:
                 qty,price,amount=matching[0]
+                # OCR may read a trailing zero as 6 (e.g. 80,000 -> 80,006).
+                # Prefer the arithmetic result for small residual differences,
+                # but retain an explicit review flag for the corrected row.
+                calculated=round(qty*price)
+                if amount != calculated and abs(amount-calculated)<=10:
+                    amount=calculated
+                    inferred=True
             elif qty is not None and price is not None:
                 # Image OCR often drops the final zero(s) in the amount column.
                 # The same layout also sometimes reads quantity "1.0" as "10".
