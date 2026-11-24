@@ -550,20 +550,38 @@ def _parse_santen_image_pdf(d):
             qty_candidates=numeric_candidates(im,(440,y0,477,y1),quantity=True)
             price_candidates=numeric_candidates(im,(523,y0,578,y1))
             amount_candidates=numeric_candidates(im,(583,y0,659,y1))
-            if not amount_candidates: continue
+            # 金額欄の右端が罫線に近く、末尾0をOCRで欠落しやすい。
+            # 数量・単価が読める行は金額OCRが空でも行を落とさない。
+            if not amount_candidates and not (qty_candidates and price_candidates):
+                continue
             name=cell(im,(119,y0,370,y1))
-            if not name or name.replace(" ","") in {"名称","合計","総合計","小計"}: continue
+            if not name or name.replace(" ","") in {"名称","合計","総合計","小計"}:
+                continue
             qty=qty_candidates[0] if qty_candidates else None
             price=price_candidates[0] if price_candidates else None
-            amount=amount_candidates[0]
-            # OCRで末尾の数字が欠けた場合、複数候補から算術一致を優先。
+            amount=amount_candidates[0] if amount_candidates else None
             matching=[(q,p,a) for q in qty_candidates for p in price_candidates
-                      for a in amount_candidates if abs(q*p-a)<=max(1,abs(a)*0.001)]
+                      for a in amount_candidates
+                      if abs(q*p-a)<=max(1,abs(a)*0.001)]
+            inferred=False
             if matching:
                 qty,price,amount=matching[0]
+            elif qty is not None and price is not None:
+                expected=round(qty*price)
+                # OCR金額が末尾の0を欠落・誤認識した場合のみ、
+                # 数量×単価を仮の金額として保持し、原本照合を必須にする。
+                if expected>0 and (
+                    not amount_candidates or any(
+                        str(expected).startswith(str(int(v))) or
+                        abs(expected-v)<=10
+                        for v in amount_candidates if v is not None)):
+                    amount=expected
+                    inferred=True
             unit=cell(im,(484,y0,515,y1))
             note=["画像PDF OCR抽出"]
-            if qty is None or price is None or not matching:
+            if inferred:
+                note.append("要確認: 金額OCR欠落・数量×単価で仮補完")
+            elif qty is None or price is None or not matching:
                 note.append("要確認: 数量・単価・金額の照合不一致")
             if len(name)<4 or re.search(r"[|\\[\\]{}]",name):
                 note.append("要確認: 項目名OCR")
