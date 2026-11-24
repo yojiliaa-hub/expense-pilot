@@ -523,7 +523,7 @@ def _parse_santen_image_pdf(d):
         for config in ("--psm 7","--psm 6"):
             raw=pytesseract.image_to_string(crop,lang="eng",config=config)
             # 罫線が混入するので、数値のまとまりを優先して抽出。
-            for match in re.findall(r"-?\\d[\\d,.]*",raw):
+            for match in re.findall(r"-?\d[\d,.]*",raw):
                 val=(nval(match) if quantity else _ocr_money(match))
                 if val is not None and val not in candidates:
                     candidates.append(val)
@@ -539,7 +539,7 @@ def _parse_santen_image_pdf(d):
     for pno in range(start,len(d)):
         im=render(d[pno])
         section=cell(im,(116,55,435,83))
-        section=re.sub(r"^[0-9A-Z]+\\s*","",section).strip(" |｜") or f"明細ページ{pno+1}"
+        section=re.sub(r"^[0-9A-Z]+\s*","",section).strip(" |｜") or f"明細ページ{pno+1}"
 
         # 横罫線の中心ではなく、各行の内側だけをOCRする。
         # ページ幅841ptの帳票に合わせた固定列。文字PDFの既存Parserには影響しない。
