@@ -502,85 +502,89 @@ def _ocr_cell_name(img,scale,cy):
         return None
 
 def _parse_santen_image_pdf(d):
-    """サンテンの画像PDF: 明細セルを個別OCRし、検算できないものは要確認にする。
-
-    画像PDFは通常PDFの文字座標とは違う。ページ3の工種サマリーと
-    ページ4以降の詳細明細を二重計上しない。
-    """
+    """画像型SANTEN見積: 罫線を避けたセルOCR、数値の複数読取、行単位検算。"""
     rows=[]
     scale=4
-    # A4横のサンテン帳票のみ。異なる寸法なら誤った座標を当てない。
     if not all(800<=p.rect.width<=860 and 570<=p.rect.height<=620 for p in d):
         return [],None,None,None
 
-    def crop_text(im,rect,lang="jpn+eng"):
-        box=tuple(int(v*scale) for v in rect)
-        return clean(pytesseract.image_to_string(
-            im.crop(box),lang=lang,config="--psm 7"
-        ))
-
-    # 表紙の金額。消費税別途のため税額を作らない。
-    front=d[0].get_pixmap(matrix=fitz.Matrix(scale,scale),alpha=False)
-    front_im=Image.frombytes("RGB",[front.width,front.height],front.samples)
-    front_amount=crop_text(front_im,(240,230,460,275),"eng")
-    pretax=_ocr_money(front_amount)
-    # 表紙OCRが不鮮明なら、2ページ目の見積額を読み直す。
-    if pretax is None and len(d)>1:
-        pix=d[1].get_pixmap(matrix=fitz.Matrix(scale,scale),alpha=False)
-        im=Image.frombytes("RGB",[pix.width,pix.height],pix.samples)
-        pretax=_ocr_money(crop_text(im,(200,115,440,160),"eng"))
-
-    # 3ページ目は工種別の集計表。4ページ目以降に詳細がある場合は除外。
-    start=3 if len(d)>=4 else 2
-    # この原本に限って工種小計を既知の検算値として使用。他の見積へ流用しない。
-    section_expected=([660000,1170000,1490000,300000,480000]
-                      if "福田本店トイレ改装工事" in str(getattr(d,"name","")) else None)
-    section_sums=[]
-    for pno in range(start,len(d)):
-        page=d[pno]
+    def render(page):
         pix=page.get_pixmap(matrix=fitz.Matrix(scale,scale),alpha=False)
-        im=Image.frombytes("RGB",[pix.width,pix.height],pix.samples)
-        section=crop_text(im,(112,54,445,86))
-        section=re.sub(r"^[0-9A-Z]+\\s*","",section).strip(" |｜")
-        section=section or f"明細ページ{pno+1}"
-        page_rows=[]
-        # 明細の横罫線は約15.2pt間隔。セルごとにOCRすると
-        # 小さな日本語と金額が混在していても列の取り違えを防げる。
-        for idx in range(26):
-            cy=110.0+idx*15.25
-            if cy>493: break
-            y0,y1=cy-7.1,cy+7.1
-            amount_txt=crop_text(im,(578,y0,669,y1),"eng")
-            amount=_ocr_money(amount_txt)
-            if amount is None: continue
-            name=crop_text(im,(115,y0,435,y1))
-            if not name or name in {"名称","合計","総合計","小計"}: continue
-            qty=nval(crop_text(im,(438,y0,480,y1),"eng"))
-            unit=crop_text(im,(480,y0,519,y1))
-            price=_ocr_money(crop_text(im,(519,y0,580,y1),"eng"))
-            spec=crop_text(im,(300,y0,435,y1))
-            # 項目名と仕様が重なる帳票では仕様を空欄にし、誤重複を避ける。
-            if spec and spec in name: spec=None
-            # 数量×単価と金額が合わない場合は金額を捨てず要確認として残す。
-            notes=["画像PDF OCR抽出・原本確認推奨"]
-            if qty is not None and price is not None and abs(qty*price-amount)>max(1,abs(amount)*0.01):
-                notes.append("数量×単価と金額が不一致")
-            page_rows.append([section,name,spec,qty,unit or None,price,amount,
-                              " / ".join(notes),pno+1])
-        rows.extend(page_rows)
-        section_sums.append(sum(r[6] for r in page_rows if isinstance(r[6],(int,float))))
+        return Image.frombytes("RGB",[pix.width,pix.height],pix.samples)
 
-    # 見積全体の一致だけでは明細の読み落としを見逃すため、工種ごとの
-    # 原本小計とも照合する。異常はExcelに明示し、自動OK判定を防ぐ。
-    if section_expected is not None and len(d)==8 and len(section_sums)==5:
-        for i,(actual,expected) in enumerate(zip(section_sums,section_expected)):
-            if actual!=expected:
-                for r in rows:
-                    if r[8]==i+4:
-                        r[7]=(r[7] or "")+f" / 工種小計要確認: 抽出{actual:,}円・原本{expected:,}円"
-                if not any(r[8]==i+4 for r in rows):
-                    rows.append([f"明細ページ{i+4}","OCR未抽出・原本照合要",None,None,None,None,None,
-                                 f"工種小計要確認: 抽出{actual:,}円・原本{expected:,}円",i+4])
+    def cell(im,box,lang="jpn+eng",psm=7):
+        crop=im.crop(tuple(int(v*scale) for v in box))
+        return clean(pytesseract.image_to_string(
+            crop,lang=lang,config=f"--psm {psm}"))
+
+    def numeric_candidates(im,box):
+        crop=im.crop(tuple(int(v*scale) for v in box))
+        candidates=[]
+        for config in ("--psm 7","--psm 6"):
+            raw=pytesseract.image_to_string(crop,lang="eng",config=config)
+            # 罫線が混入するので、数値のまとまりを優先して抽出。
+            for match in re.findall(r"-?\\d[\\d,.]*",raw):
+                val=_ocr_money(match)
+                if val is not None and val not in candidates:
+                    candidates.append(val)
+        return candidates
+
+    front=render(d[0])
+    pretax=_ocr_money(cell(front,(240,230,460,275),"eng"))
+    if pretax is None and len(d)>1:
+        pretax=_ocr_money(cell(render(d[1]),(200,115,440,160),"eng"))
+
+    # この8ページ帳票は4～8ページが明細。3ページ目は集計なので除外。
+    start=3 if len(d)>=4 else 2
+    for pno in range(start,len(d)):
+        im=render(d[pno])
+        section=cell(im,(116,55,435,83))
+        section=re.sub(r"^[0-9A-Z]+\\s*","",section).strip(" |｜") or f"明細ページ{pno+1}"
+
+        # 横罫線の中心ではなく、各行の内側だけをOCRする。
+        # ページ幅841ptの帳票に合わせた固定列。文字PDFの既存Parserには影響しない。
+        for idx in range(25):
+            cy=111.0+idx*15.25
+            if cy>492: break
+            y0,y1=cy-6.4,cy+6.4
+            qty_candidates=numeric_candidates(im,(440,y0,477,y1))
+            price_candidates=numeric_candidates(im,(523,y0,578,y1))
+            amount_candidates=numeric_candidates(im,(583,y0,659,y1))
+            if not amount_candidates: continue
+            name=cell(im,(119,y0,370,y1))
+            if not name or name.replace(" ","") in {"名称","合計","総合計","小計"}: continue
+            qty=qty_candidates[0] if qty_candidates else None
+            price=price_candidates[0] if price_candidates else None
+            amount=amount_candidates[0]
+            # OCRで末尾の数字が欠けた場合、複数候補から算術一致を優先。
+            matching=[(q,p,a) for q in qty_candidates for p in price_candidates
+                      for a in amount_candidates if abs(q*p-a)<=max(1,abs(a)*0.001)]
+            if matching:
+                qty,price,amount=matching[0]
+            unit=cell(im,(484,y0,515,y1))
+            note=["画像PDF OCR抽出"]
+            if qty is None or price is None or not matching:
+                note.append("要確認: 数量・単価・金額の照合不一致")
+            if len(name)<4 or re.search(r"[|\\[\\]{}]",name):
+                note.append("要確認: 項目名OCR")
+            rows.append([section,name,None,qty,unit or None,price,amount,
+                         " / ".join(note),pno+1])
+
+    # 画像PDFの読取値は合計が合っても誤認識の可能性がある。
+    # ページ別原本小計は画像から読取り、相違があれば必ず要確認にする。
+    for pno in range(start,len(d)):
+        page_rows=[r for r in rows if r[8]==pno+1]
+        im=render(d[pno])
+        subtotal_candidates=numeric_candidates(im,(579,519,659,540))
+        if subtotal_candidates:
+            subtotal=subtotal_candidates[0]
+            extracted=sum(r[6] for r in page_rows if isinstance(r[6],(int,float)))
+            if extracted!=subtotal:
+                if page_rows:
+                    page_rows[0][7]+=(f" / 工種小計要確認: 抽出{extracted:,}円・原本OCR{subtotal:,}円")
+                else:
+                    rows.append([f"明細ページ{pno+1}","OCR未抽出・原本照合要",None,
+                                 None,None,None,None,"工種小計要確認",pno+1])
     return rows,None,pretax,None
 
 def parse_santen(path):
@@ -863,7 +867,7 @@ if uploads:
                 missing_amount=sum(
                     1 for r in rows
                     if (r[5] is not None and r[6] is None)
-                    or (r[7] and ("工種小計要確認" in r[7] or "数量×単価と金額が不一致" in r[7]))
+                    or (r[7] and ("工種小計要確認" in r[7] or "要確認:" in r[7] or "数量×単価と金額が不一致" in r[7]))
                 )
                 bad=arithmetic_bad + missing_amount
                 # OCR明細は、ページの金額と照合できなければOKと表示しない。
