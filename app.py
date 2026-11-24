@@ -579,7 +579,7 @@ def _parse_santen_image_pdf(d):
                     if amount is None:
                         amount=expected
                         inferred=True
-                    elif abs(expected-amount)<=10 or (
+                    elif abs(expected-amount)<=50 or (
                         expected>amount>0 and
                         any(abs(expected-v*factor)<=10 for v in amount_candidates
                             for factor in (10,100))):
