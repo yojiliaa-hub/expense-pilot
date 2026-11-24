@@ -517,14 +517,14 @@ def _parse_santen_image_pdf(d):
         return clean(pytesseract.image_to_string(
             crop,lang=lang,config=f"--psm {psm}"))
 
-    def numeric_candidates(im,box):
+    def numeric_candidates(im,box,quantity=False):
         crop=im.crop(tuple(int(v*scale) for v in box))
         candidates=[]
         for config in ("--psm 7","--psm 6"):
             raw=pytesseract.image_to_string(crop,lang="eng",config=config)
             # 罫線が混入するので、数値のまとまりを優先して抽出。
             for match in re.findall(r"-?\\d[\\d,.]*",raw):
-                val=_ocr_money(match)
+                val=(nval(match) if quantity else _ocr_money(match))
                 if val is not None and val not in candidates:
                     candidates.append(val)
         return candidates
@@ -547,7 +547,7 @@ def _parse_santen_image_pdf(d):
             cy=111.0+idx*15.25
             if cy>492: break
             y0,y1=cy-6.4,cy+6.4
-            qty_candidates=numeric_candidates(im,(440,y0,477,y1))
+            qty_candidates=numeric_candidates(im,(440,y0,477,y1),quantity=True)
             price_candidates=numeric_candidates(im,(523,y0,578,y1))
             amount_candidates=numeric_candidates(im,(583,y0,659,y1))
             if not amount_candidates: continue
