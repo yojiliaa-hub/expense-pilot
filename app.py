@@ -577,7 +577,11 @@ def _parse_santen_image_pdf(d):
                         for v in amount_candidates if v is not None)):
                     amount=expected
                     inferred=True
-            # 数円単位の末尾誤認識は算術一致を優先し、要確認に残す。\n            if not matching and qty is not None and price is not None and amount is not None and abs(round(qty*price)-amount)<=10:\n                amount=round(qty*price)\n                inferred=True\n            unit=cell(im,(484,y0,515,y1))
+            # 数円単位の末尾誤認識は算術一致を優先し、要確認に残す。
+            if not matching and qty is not None and price is not None and amount is not None and abs(round(qty*price)-amount)<=10:
+                amount=round(qty*price)
+                inferred=True
+            unit=cell(im,(484,y0,515,y1))
             note=["画像PDF OCR抽出"]
             if inferred:
                 note.append("要確認: 金額OCR欠落・数量×単価で仮補完")
