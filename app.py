@@ -567,20 +567,26 @@ def _parse_santen_image_pdf(d):
             if matching:
                 qty,price,amount=matching[0]
             elif qty is not None and price is not None:
-                expected=round(qty*price)
-                # OCR金額が末尾の0を欠落・誤認識した場合のみ、
-                # 数量×単価を仮の金額として保持し、原本照合を必須にする。
-                if expected>0 and qty==1 and (
-                    not amount_candidates or any(
-                        str(expected).startswith(str(int(v))) or
-                        abs(expected-v)<=10
-                        for v in amount_candidates if v is not None)):
-                    amount=expected
+                # Image OCR often drops the final zero(s) in the amount column.
+                # The same layout also sometimes reads quantity "1.0" as "10".
+                # Only normalize this specific ambiguous quantity when the
+                # printed unit price is greater than the truncated amount.
+                if qty==10 and price>0 and amount is not None and 0<amount<=price:
+                    qty=1
                     inferred=True
-            # 数円単位の末尾誤認識は算術一致を優先し、要確認に残す。
-            if not matching and qty is not None and price is not None and amount is not None and abs(round(qty*price)-amount)<=10:
-                amount=round(qty*price)
-                inferred=True
+                expected=round(qty*price)
+                if expected>0:
+                    if amount is None:
+                        amount=expected
+                        inferred=True
+                    elif abs(expected-amount)<=10 or (
+                        expected>amount>0 and
+                        any(abs(expected-v*factor)<=10 for v in amount_candidates
+                            for factor in (10,100))):
+                        amount=expected
+                        inferred=True
+            # Do not silently replace arbitrary OCR amounts: unresolved
+            # disagreements remain visible for manual verification.
             unit=cell(im,(484,y0,515,y1))
             note=["画像PDF OCR抽出"]
             if inferred:
@@ -599,11 +605,16 @@ def _parse_santen_image_pdf(d):
         im=render(d[pno])
         subtotal_candidates=numeric_candidates(im,(579,519,659,540))
         if subtotal_candidates:
-            subtotal=subtotal_candidates[0]
             extracted=sum(r[6] for r in page_rows if isinstance(r[6],(int,float)))
-            if extracted!=subtotal:
+            # Bottom-of-page total OCR also drops final zeroes. Check candidate
+            # scale variants against the actual sum rather than trusting the
+            # first OCR string (e.g. 30,000 instead of 300,000).
+            totals={int(v)*factor for v in subtotal_candidates if v is not None
+                    for factor in (1,10,100)}
+            if extracted not in totals:
+                subtotal=subtotal_candidates[0]
                 if page_rows:
-                    page_rows[0][7]+=(f" / 工種小計要確認: 抽出{extracted:,}円・原本小計{subtotal:,}円")
+                    page_rows[0][7]+=(f" / 工種小計要確認: 抽出{extracted:,}円・原本OCR{subtotal:,}円")
                 else:
                     rows.append([f"明細ページ{pno+1}","OCR未抽出・原本照合要",None,
                                  None,None,None,None,"工種小計要確認",pno+1])
