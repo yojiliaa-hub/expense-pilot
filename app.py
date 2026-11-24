@@ -532,7 +532,9 @@ def _parse_santen_image_pdf(d):
 
     # 3ページ目は工種別の集計表。4ページ目以降に詳細がある場合は除外。
     start=3 if len(d)>=4 else 2
-    section_expected=[660000,1170000,1490000,300000,480000]
+    # この原本に限って工種小計を既知の検算値として使用。他の見積へ流用しない。
+    section_expected=([660000,1170000,1490000,300000,480000]
+                      if "福田本店トイレ改装工事" in str(getattr(d,"name","")) else None)
     section_sums=[]
     for pno in range(start,len(d)):
         page=d[pno]
@@ -570,7 +572,7 @@ def _parse_santen_image_pdf(d):
 
     # 見積全体の一致だけでは明細の読み落としを見逃すため、工種ごとの
     # 原本小計とも照合する。異常はExcelに明示し、自動OK判定を防ぐ。
-    if len(d)==8 and len(section_sums)==5:
+    if section_expected is not None and len(d)==8 and len(section_sums)==5:
         for i,(actual,expected) in enumerate(zip(section_sums,section_expected)):
             if actual!=expected:
                 for r in rows:
