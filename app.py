@@ -65,6 +65,19 @@ def classify(path):
         return "BAN"
     if "サンテン" in fn or "サンテン" in t or "SANTEN-CORP.COM" in t.upper():
         return "SANTEN"
+    # スキャンPDFは文字レイヤーがないため、表紙ロゴだけをOCRして発行元を判定。
+    if len(d)>=3 and not t.strip() and ("見積" in fn or "御見積" in fn):
+        try:
+            page=d[0]
+            clip=fitz.Rect(page.rect.width*.70, page.rect.height*.10,
+                           page.rect.width, page.rect.height*.55)
+            pix=page.get_pixmap(matrix=fitz.Matrix(3,3),clip=clip,alpha=False)
+            im=Image.frombytes("RGB",[pix.width,pix.height],pix.samples)
+            logo=pytesseract.image_to_string(im,lang="jpn+eng",config="--psm 6")
+            if "santen" in logo.lower() or "サンテン" in logo:
+                return "SANTEN"
+        except Exception:
+            pass
     return "HIMI"
 
 def extract_discount_rows(path):
@@ -489,64 +502,63 @@ def _ocr_cell_name(img,scale,cy):
         return None
 
 def _parse_santen_image_pdf(d):
-    """文字レイヤーが無いSANTEN画像PDFのフォールバック。"""
+    """サンテンの画像PDF: 明細セルを個別OCRし、検算できないものは要確認にする。
+
+    画像PDFは通常PDFの文字座標とは違う。ページ3の工種サマリーと
+    ページ4以降の詳細明細を二重計上しない。
+    """
     rows=[]
-    ocr=[]
-    for page in d:
-        tokens,img,scale=_ocr_santen_tokens(page)
-        ocr.append((tokens,img,scale))
+    scale=4
+    # A4横のサンテン帳票のみ。異なる寸法なら誤った座標を当てない。
+    if not all(800<=p.rect.width<=860 and 570<=p.rect.height<=620 for p in d):
+        return [],None,None,None
 
-    # 2ページ目の工種サマリーを大項目名として利用。
-    # OCRで欠けた工種は各明細ページ上部から補完する。
-    sections=[]
-    if len(d)>=2:
-        for g in _ocr_line_groups(ocr[1][0],190,520,7):
-            ws=sorted(g["w"])
-            name=clean(" ".join(t for x,t in ws if 82<=x<430))
-            amt=_ocr_money(clean(" ".join(t for x,t in ws if 580<=x<680)))
-            if name and amt and "総合計" not in name and "値引" not in name:
-                sections.append(name)
+    def crop_text(im,rect,lang="jpn+eng"):
+        box=tuple(int(v*scale) for v in rect)
+        return clean(pytesseract.image_to_string(
+            im.crop(box),lang=lang,config="--psm 7"
+        ))
 
-    page_titles={}
-    for pno in range(2,len(d)):
-        tokens,img,scale=ocr[pno]
-        crop=img.crop((int(55*scale),int(35*scale),int(430*scale),int(78*scale)))
-        try:
-            title=clean(pytesseract.image_to_string(
-                crop,lang="jpn+eng",config="--psm 6"
-            ))
-        except:
-            title=None
-        if title:
-            title=re.sub(r"^[|\s]*\d+\s*[|｜]?\s*","",title).strip()
-            if title: page_titles[pno]=title
+    # 表紙の金額。消費税別途のため税額を作らない。
+    front=d[0].get_pixmap(matrix=fitz.Matrix(scale,scale),alpha=False)
+    front_im=Image.frombytes("RGB",[front.width,front.height],front.samples)
+    front_amount=crop_text(front_im,(240,230,460,275),"eng")
+    pretax=_ocr_money(front_amount)
+    # 表紙OCRが不鮮明なら、2ページ目の見積額を読み直す。
+    if pretax is None and len(d)>1:
+        pix=d[1].get_pixmap(matrix=fitz.Matrix(scale,scale),alpha=False)
+        im=Image.frombytes("RGB",[pix.width,pix.height],pix.samples)
+        pretax=_ocr_money(crop_text(im,(200,115,440,160),"eng"))
 
-    cols={"name":(82,255),"spec":(255,442),"qty":(442,490),"unit":(490,535),
-          "price":(535,620),"amount":(620,675),"remark":(675,800)}
-    for pno in range(2,len(d)):
-        tokens,img,scale=ocr[pno]
-        current=(sections[pno-2] if pno-2<len(sections) else None) or page_titles.get(pno) or f"明細{pno-1}"
-        for g in _ocr_line_groups(tokens,75,540,6):
-            ws=sorted(g["w"])
-            c={k:clean(" ".join(t for x,t in ws if lo<=x<hi)) or None
-               for k,(lo,hi) in cols.items()}
-            amount=_ocr_money(c["amount"])
+    # 3ページ目は工種別の集計表。4ページ目以降に詳細がある場合は除外。
+    start=3 if len(d)>=4 else 2
+    for pno in range(start,len(d)):
+        page=d[pno]
+        pix=page.get_pixmap(matrix=fitz.Matrix(scale,scale),alpha=False)
+        im=Image.frombytes("RGB",[pix.width,pix.height],pix.samples)
+        section=crop_text(im,(112,54,445,86))
+        section=re.sub(r"^[0-9A-Z]+\\s*","",section).strip(" |｜")
+        section=section or f"明細ページ{pno+1}"
+        # 明細の横罫線は約15.2pt間隔。セルごとにOCRすると
+        # 小さな日本語と金額が混在していても列の取り違えを防げる。
+        for idx in range(26):
+            cy=110.0+idx*15.25
+            if cy>493: break
+            y0,y1=cy-7.1,cy+7.1
+            amount_txt=crop_text(im,(578,y0,669,y1),"eng")
+            amount=_ocr_money(amount_txt)
             if amount is None: continue
-            name=c["name"]
-            if not name:
-                name=_ocr_cell_name(img,scale,g["cy"])
-            if not name or name in {"名称","合計","総合計"}: continue
-            qty=nval(c["qty"]); price=_ocr_money(c["price"])
-            rows.append([current,name,c["spec"],qty,c["unit"],price,amount,c["remark"],pno+1])
+            name=crop_text(im,(115,y0,435,y1))
+            if not name or name in {"名称","合計","総合計","小計"}: continue
+            qty=nval(crop_text(im,(438,y0,480,y1),"eng"))
+            unit=crop_text(im,(480,y0,519,y1))
+            price=_ocr_money(crop_text(im,(519,y0,580,y1),"eng"))
+            spec=crop_text(im,(300,y0,435,y1))
+            # 項目名と仕様が重なる帳票では仕様を空欄にし、誤重複を避ける。
+            if spec and spec in name: spec=None
+            rows.append([section,name,spec,qty,unit or None,price,amount,
+                         "画像PDF OCR抽出・原本確認推奨",pno+1])
 
-    # 表紙/サマリーの見積額はOCR上の最大金額を採用（SANTEN税別見積）。
-    pretax=None
-    if len(d)>=2:
-        vals=[]
-        for x0,y0,x1,y1,t,conf in ocr[1][0]:
-            v=_ocr_money(t)
-            if isinstance(v,(int,float)) and v>=1000: vals.append(v)
-        pretax=max(vals) if vals else None
     return rows,None,pretax,None
 
 def parse_santen(path):
@@ -831,6 +843,13 @@ if uploads:
                     if r[5] is not None and r[6] is None
                 )
                 bad=arithmetic_bad + missing_amount
+                # OCR明細は、ページの金額と照合できなければOKと表示しない。
+                is_scanned=(typ=="SANTEN" and
+                            not fitz.open(str(p))[0].get_text("text").strip())
+                if is_scanned:
+                    extracted_sum=sum(r[6] for r in rows if isinstance(r[6],(int,float)))
+                    if pretax is None or extracted_sum!=pretax:
+                        bad+=1
                 results.append({
                     "name":u.name,"type":typ,"pages":len(fitz.open(str(p))),"rows":rows,
                     "total":total,"pretax":pretax,"tax":tax,"discount":discount,"bad":bad,
