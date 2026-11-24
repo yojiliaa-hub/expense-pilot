@@ -529,6 +529,50 @@ def _parse_santen_image_pdf(d):
                     candidates.append(val)
         return candidates
 
+    def read_item_name(im,y0,y1):
+        """Compare OCR passes on the same name cell without guessing terminology."""
+        from PIL import ImageEnhance, ImageOps, ImageFilter
+        # Keep the original tightly cropped pass as the baseline.
+        base=im.crop(tuple(int(v*scale) for v in (119,y0,370,y1)))
+        # A little vertical breathing room helps kanji recognition in small print.
+        expanded=im.crop(tuple(int(v*scale) for v in
+                               (119,max(0,y0-2.3),370,min(im.height/scale,y1+2.3))))
+        variants=[base,expanded]
+        gray=ImageOps.grayscale(expanded)
+        variants.append(ImageEnhance.Contrast(gray).enhance(1.7))
+        variants.append(gray.filter(ImageFilter.UnsharpMask(radius=1.2,percent=135,threshold=2)))
+        candidates=[]
+        for image_variant in variants:
+            for psm in (7,6):
+                data=pytesseract.image_to_data(
+                    image_variant,lang="jpn+eng",config=f"--psm {psm}",
+                    output_type=pytesseract.Output.DICT)
+                parts=[]; confidences=[]
+                for t,c in zip(data["text"],data["conf"]):
+                    t=clean(t)
+                    if not t: continue
+                    parts.append(t)
+                    try:
+                        if float(c)>=0: confidences.append(float(c))
+                    except (ValueError,TypeError): pass
+                name=" ".join(parts).strip()
+                if name:
+                    avg=sum(confidences)/len(confidences) if confidences else 0
+                    candidates.append((name,avg))
+        if not candidates:
+            return None,True
+        # Consensus first, confidence second; never invent a product name.
+        normalized=lambda x: re.sub(r"\\s+","",x)
+        scores={}
+        for name,conf in candidates:
+            key=normalized(name)
+            count,highest,chosen=scores.get(key,(0,-1,name))
+            scores[key]=(count+1,max(highest,conf),name if conf>=highest else chosen)
+        best=max(scores.values(),key=lambda x:(x[0],x[1]))
+        # Disagreement or weak confidence stays reviewable in the Excel notes.
+        uncertain=best[0]<2 or best[1]<50
+        return best[2],uncertain
+
     front=render(d[0])
     pretax=_ocr_money(cell(front,(240,230,460,275),"eng"))
     if pretax is None and len(d)>1:
@@ -554,7 +598,7 @@ def _parse_santen_image_pdf(d):
             # 数量・単価が読める行は金額OCRが空でも行を落とさない。
             if not amount_candidates and not (qty_candidates and price_candidates):
                 continue
-            name=cell(im,(119,y0,370,y1))
+            name,name_uncertain=read_item_name(im,y0,y1)
             if not name or name.replace(" ","") in {"名称","合計","総合計","小計"}:
                 continue
             qty=qty_candidates[0] if qty_candidates else None
@@ -600,7 +644,7 @@ def _parse_santen_image_pdf(d):
                 note.append("要確認: 金額OCR欠落・数量×単価で仮補完")
             elif qty is None or price is None or not matching:
                 note.append("要確認: 数量・単価・金額の照合不一致")
-            if len(name)<4 or re.search(r"[|\\[\\]{}]",name):
+            if name_uncertain or len(name)<4 or re.search(r"[|\\[\\]{}]",name):
                 note.append("要確認: 項目名OCR")
             rows.append([section,name,None,qty,unit or None,price,amount,
                          " / ".join(note),pno+1])
