@@ -570,14 +570,14 @@ def _parse_santen_image_pdf(d):
                 expected=round(qty*price)
                 # OCR金額が末尾の0を欠落・誤認識した場合のみ、
                 # 数量×単価を仮の金額として保持し、原本照合を必須にする。
-                if expected>0 and (
+                if expected>0 and qty==1 and (
                     not amount_candidates or any(
                         str(expected).startswith(str(int(v))) or
                         abs(expected-v)<=10
                         for v in amount_candidates if v is not None)):
                     amount=expected
                     inferred=True
-            unit=cell(im,(484,y0,515,y1))
+            # 数円単位の末尾誤認識は算術一致を優先し、要確認に残す。\n            if not matching and qty is not None and price is not None and amount is not None and abs(round(qty*price)-amount)<=10:\n                amount=round(qty*price)\n                inferred=True\n            unit=cell(im,(484,y0,515,y1))
             note=["画像PDF OCR抽出"]
             if inferred:
                 note.append("要確認: 金額OCR欠落・数量×単価で仮補完")
@@ -599,7 +599,7 @@ def _parse_santen_image_pdf(d):
             extracted=sum(r[6] for r in page_rows if isinstance(r[6],(int,float)))
             if extracted!=subtotal:
                 if page_rows:
-                    page_rows[0][7]+=(f" / 工種小計要確認: 抽出{extracted:,}円・原本OCR{subtotal:,}円")
+                    page_rows[0][7]+=(f" / 工種小計要確認: 抽出{extracted:,}円・原本小計{subtotal:,}円")
                 else:
                     rows.append([f"明細ページ{pno+1}","OCR未抽出・原本照合要",None,
                                  None,None,None,None,"工種小計要確認",pno+1])
