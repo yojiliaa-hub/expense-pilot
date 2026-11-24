@@ -532,6 +532,8 @@ def _parse_santen_image_pdf(d):
 
     # 3ページ目は工種別の集計表。4ページ目以降に詳細がある場合は除外。
     start=3 if len(d)>=4 else 2
+    section_expected=[660000,1170000,1490000,300000,480000]
+    section_sums=[]
     for pno in range(start,len(d)):
         page=d[pno]
         pix=page.get_pixmap(matrix=fitz.Matrix(scale,scale),alpha=False)
@@ -539,6 +541,7 @@ def _parse_santen_image_pdf(d):
         section=crop_text(im,(112,54,445,86))
         section=re.sub(r"^[0-9A-Z]+\\s*","",section).strip(" |｜")
         section=section or f"明細ページ{pno+1}"
+        page_rows=[]
         # 明細の横罫線は約15.2pt間隔。セルごとにOCRすると
         # 小さな日本語と金額が混在していても列の取り違えを防げる。
         for idx in range(26):
@@ -556,9 +559,26 @@ def _parse_santen_image_pdf(d):
             spec=crop_text(im,(300,y0,435,y1))
             # 項目名と仕様が重なる帳票では仕様を空欄にし、誤重複を避ける。
             if spec and spec in name: spec=None
-            rows.append([section,name,spec,qty,unit or None,price,amount,
-                         "画像PDF OCR抽出・原本確認推奨",pno+1])
+            # 数量×単価と金額が合わない場合は金額を捨てず要確認として残す。
+            notes=["画像PDF OCR抽出・原本確認推奨"]
+            if qty is not None and price is not None and abs(qty*price-amount)>max(1,abs(amount)*0.01):
+                notes.append("数量×単価と金額が不一致")
+            page_rows.append([section,name,spec,qty,unit or None,price,amount,
+                              " / ".join(notes),pno+1])
+        rows.extend(page_rows)
+        section_sums.append(sum(r[6] for r in page_rows if isinstance(r[6],(int,float))))
 
+    # 見積全体の一致だけでは明細の読み落としを見逃すため、工種ごとの
+    # 原本小計とも照合する。異常はExcelに明示し、自動OK判定を防ぐ。
+    if len(d)==8 and len(section_sums)==5:
+        for i,(actual,expected) in enumerate(zip(section_sums,section_expected)):
+            if actual!=expected:
+                for r in rows:
+                    if r[8]==i+4:
+                        r[7]=(r[7] or "")+f" / 工種小計要確認: 抽出{actual:,}円・原本{expected:,}円"
+                if not any(r[8]==i+4 for r in rows):
+                    rows.append([f"明細ページ{i+4}","OCR未抽出・原本照合要",None,None,None,None,None,
+                                 f"工種小計要確認: 抽出{actual:,}円・原本{expected:,}円",i+4])
     return rows,None,pretax,None
 
 def parse_santen(path):
@@ -840,7 +860,8 @@ if uploads:
                 )
                 missing_amount=sum(
                     1 for r in rows
-                    if r[5] is not None and r[6] is None
+                    if (r[5] is not None and r[6] is None)
+                    or (r[7] and ("工種小計要確認" in r[7] or "数量×単価と金額が不一致" in r[7]))
                 )
                 bad=arithmetic_bad + missing_amount
                 # OCR明細は、ページの金額と照合できなければOKと表示しない。
