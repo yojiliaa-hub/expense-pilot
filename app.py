@@ -529,6 +529,28 @@ def _parse_santen_image_pdf(d):
                     candidates.append(val)
         return candidates
 
+    def tidy_ocr_item_name(raw):
+        """Normalize spacing/noise only; never guess an unreadable item name."""
+        if not raw:
+            return raw,False
+        original=unicodedata.normalize("NFKC",raw).strip()
+        name=re.sub(r"\\s+"," ",original)
+        # Remove OCR artifacts at the end, not meaningful punctuation inside text.
+        name=re.sub(r"(?:\\s*[。・.©|ー]){2,}\\s*$","",name).strip()
+        name=re.sub(r"\\s*[©|]\\s*$","",name).strip()
+        # Japanese word fragments are frequently separated by OCR tokenization.
+        # Preserve spaces between ASCII tokens/numbers (e.g. WC, 100A).
+        jp=r"一-龯々〆ヵヶぁ-んァ-ヴー"
+        name=re.sub(rf"(?<=[{jp}])\\s+(?=[{jp}])","",name)
+        name=re.sub(rf"(?<=[{jp}])\\s+(?=[A-Za-z])","",name)
+        name=re.sub(rf"(?<=[A-Za-z])\\s+(?=[{jp}])","",name)
+        name=re.sub(r"\\s+([、。・（）()])",r"\\1",name)
+        name=re.sub(r"([（(])\\s+",r"\\1",name)
+        # A short Latin-only fragment or conspicuous leftover OCR marks is suspect.
+        suspicious=bool(re.fullmatch(r"[A-Za-z]{1,5}",name) or
+                        re.search(r"[©|]|[。]{2,}|(?:^|\\s)[ー]{2,}",original))
+        return name,suspicious
+
     def read_item_name(im,y0,y1):
         """Compare OCR passes on the same name cell without guessing terminology."""
         from PIL import ImageEnhance, ImageOps, ImageFilter
@@ -570,8 +592,9 @@ def _parse_santen_image_pdf(d):
             scores[key]=(count+1,max(highest,conf),name if conf>=highest else chosen)
         best=max(scores.values(),key=lambda x:(x[0],x[1]))
         # Disagreement or weak confidence stays reviewable in the Excel notes.
-        uncertain=best[0]<2 or best[1]<50
-        return best[2],uncertain
+        normalized_name,format_uncertain=tidy_ocr_item_name(best[2])
+        uncertain=best[0]<2 or best[1]<50 or format_uncertain
+        return normalized_name,uncertain
 
     front=render(d[0])
     pretax=_ocr_money(cell(front,(240,230,460,275),"eng"))
