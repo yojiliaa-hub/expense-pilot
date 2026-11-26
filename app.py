@@ -685,7 +685,27 @@ def _parse_santen_image_pdf(d):
             # first OCR string (e.g. 30,000 instead of 300,000).
             totals={int(v)*factor for v in subtotal_candidates if v is not None
                     for factor in (1,10,100)}
-            if extracted not in totals:
+            # Some scans misread the final printed zero as 6/8/9.
+            # Treat that as a subtotal OCR artifact ONLY when every line
+            # has independently consistent quantity x unit price and the
+            # difference is confined to the final digit.
+            lines_consistent=bool(page_rows) and all(
+                isinstance(r[3],(int,float)) and
+                isinstance(r[5],(int,float)) and
+                isinstance(r[6],(int,float)) and
+                abs(r[3]*r[5]-r[6])<0.01
+                for r in page_rows
+            )
+            last_digit_ocr_error=(
+                lines_consistent and extracted>=10000 and extracted%10==0 and
+                any(
+                    v*factor//10==extracted//10 and
+                    v*factor%10 in (6,8,9)
+                    for v in subtotal_candidates if v is not None
+                    for factor in (1,10,100)
+                )
+            )
+            if extracted not in totals and not last_digit_ocr_error:
                 subtotal=subtotal_candidates[0]
                 if page_rows:
                     page_rows[0][7]+=(f" / 工種小計要確認: 抽出{extracted:,}円・原本OCR{subtotal:,}円")
