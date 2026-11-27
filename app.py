@@ -924,6 +924,18 @@ def normalize_santen_excel_name(value):
 # Original-PDF verified labels; only for this exact quotation and matching line amounts.
 SANTEN_FUKUDA_NAMES = {"4":[["既存WCブース脱着及び切りつめ加工",100000],["入口建具脱着",12000],["WCブースダイノックシート貼り",415500],["入口建具ダイノックシート貼り",62325],["下地処理",24000],["副資材",6175],["運搬費",40000]],"5":[["既存天井補修",25000],["壁面セラール貼り",807300],["上部見切り金具",34000],["入隅コーキング",20000],["消耗品雑材料費",14700],["資材運搬費",70000],["既存土間ガチオン",60000],["長尺シート貼り",90000],["ソフト巾木",15000],["消耗品雑材料費",4000],["運搬費",30000]],"6":[["既設衛生器具撤去",50000],["腰掛洋風便器",730500],["紙巻き器",21450],["洗面カウンター台",185000],["手洗い器",278200],["ミラーパネル",90000],["機器取り付け費",80000],["消耗品雑材料費",14850],["運搬費",40000]],"7":[["DL",70000],["間接照明",57000],["機器取替費",80000],["コンセント配線",59500],["消耗品雑材料費",8500],["運搬諸雑費",25000]],"8":[["企画設計費",200000],["現場管理費",240000],["会社経費",40000]]}
 
+# Units and specification text transcribed from the original quotation pages 4-8.
+# Sequence is checked against the amount-validated reference above.
+SANTEN_FUKUDA_DETAILS = {
+    "4": [("式",None),("式",None),("m",None),("m",None),("式",None),("式",None),("式",None)],
+    "5": [("式",None),("㎡",None),("m",None),("式",None),("式",None),("式",None),
+          ("㎡",None),("㎡","溶接棒他"),("式",None),("式",None),("式",None)],
+    "6": [("式",None),("台",None),("個","棚付き2連タイプ"),("台",None),
+          ("台","自動水栓"),("台",None),("式",None),("式",None),("式",None)],
+    "7": [("台",None),("台",None),("式","撤去共"),("ヶ所","E付"),("式",None),("式",None)],
+    "8": [("式",None),("式",None),("式",None)],
+}
+
 def verified_fukuda_rows(result):
     rows=result['rows']
     if result['type']!='SANTEN' or '福田本店トイレ改装工事' not in result['name']:
@@ -941,10 +953,26 @@ def verified_fukuda_rows(result):
         row=list(original)
         p=str(row[8])
         if p in SANTEN_FUKUDA_NAMES:
-            row[1]=SANTEN_FUKUDA_NAMES[p][positions[p]][0]
+            idx=positions[p]
+            row[1]=SANTEN_FUKUDA_NAMES[p][idx][0]
+            unit,spec=SANTEN_FUKUDA_DETAILS[p][idx]
+            row[4]=unit
+            row[2]=spec
             positions[p]+=1
             if isinstance(row[7],str):
-                row[7]=row[7].replace(' / 要確認: 項目名OCR','')
+                # Names/units/specs were checked against the original PDF.
+                # Keep arithmetic warnings only where the numbers still disagree.
+                note_parts=[part.strip() for part in row[7].split(" / ")]
+                note_parts=[part for part in note_parts if
+                            "項目名OCR" not in part and
+                            "金額OCR欠落・数量×単価で仮補完" not in part]
+                if (isinstance(row[3],(int,float)) and
+                    isinstance(row[5],(int,float)) and
+                    isinstance(row[6],(int,float)) and
+                    abs(row[3]*row[5]-row[6])<0.01):
+                    note_parts=[part for part in note_parts if
+                                "数量・単価・金額の照合不一致" not in part]
+                row[7]=" / ".join(note_parts)
         out.append(row)
     return out
 
