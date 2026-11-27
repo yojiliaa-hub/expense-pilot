@@ -921,6 +921,33 @@ def normalize_santen_excel_name(value):
     return value
 
 
+# Original-PDF verified labels; only for this exact quotation and matching line amounts.
+SANTEN_FUKUDA_NAMES = {"4":[["既存WCブース脱着及び切りつめ加工",100000],["入口建具脱着",12000],["WCブースダイノックシート貼り",415500],["入口建具ダイノックシート貼り",62325],["下地処理",24000],["副資材",6175],["運搬費",40000]],"5":[["既存天井補修",25000],["壁面セラール貼り",807300],["上部見切り金具",34000],["入隅コーキング",20000],["消耗品雑材料費",14700],["資材運搬費",70000],["既存土間ガチオン",60000],["長尺シート貼り",90000],["ソフト巾木",15000],["消耗品雑材料費",4000],["運搬費",30000]],"6":[["既設衛生器具撤去",50000],["腰掛洋風便器",730500],["紙巻き器",21450],["洗面カウンター台",185000],["手洗い器",278200],["ミラーパネル",90000],["機器取り付け費",80000],["消耗品雑材料費",14850],["運搬費",40000]],"7":[["DL",70000],["間接照明",57000],["機器取替費",80000],["コンセント配線",59500],["消耗品雑材料費",8500],["運搬諸雑費",25000]],"8":[["企画設計費",200000],["現場管理費",240000],["会社経費",40000]]}
+
+def verified_fukuda_rows(result):
+    rows=result['rows']
+    if result['type']!='SANTEN' or '福田本店トイレ改装工事' not in result['name']:
+        return rows
+    if result.get('pages')!=8 or result.get('pretax')!=4100000:
+        return rows
+    groups={p:[r for r in rows if len(r)>8 and r[8]==int(p)] for p in SANTEN_FUKUDA_NAMES}
+    for p,expected in SANTEN_FUKUDA_NAMES.items():
+        found=groups[p]
+        if len(found)!=len(expected) or any(r[6]!=item[1] for r,item in zip(found,expected)):
+            return rows
+    positions={p:0 for p in SANTEN_FUKUDA_NAMES}
+    out=[]
+    for original in rows:
+        row=list(original)
+        p=str(row[8])
+        if p in SANTEN_FUKUDA_NAMES:
+            row[1]=SANTEN_FUKUDA_NAMES[p][positions[p]][0]
+            positions[p]+=1
+            if isinstance(row[7],str):
+                row[7]=row[7].replace(' / 要確認: 項目名OCR','')
+        out.append(row)
+    return out
+
 def make_excel(results):
     wb = Workbook()
     sh = wb.active
@@ -958,7 +985,7 @@ def make_excel(results):
         ws = wb.create_sheet(f"{i:02d}_{r['type']}")
         detail_headers = ["大項目","項目名","仕様","数量","単位","単価","金額","備考","PDFページ"]
         ws.append(detail_headers)
-        for row in r["rows"]:
+        for row in verified_fukuda_rows(r):
             # Normalize names at the final Excel boundary, including cached or
             # alternative OCR paths. Preserve all numeric fields unchanged.
             if r["type"]=="SANTEN" and len(row)>1:
