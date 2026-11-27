@@ -906,6 +906,21 @@ def parse_himi(path):
         return int(m.group(1).replace(",","")) if m else None
     return rows,money("税込見積金額"),money("合計金額"),money("消費税および地方消費税")
 
+def normalize_santen_excel_name(value):
+    """Presentation-only cleanup for scanned SANTEN names; never touch numbers."""
+    if not isinstance(value,str):
+        return value
+    value=unicodedata.normalize("NFKC",value).strip()
+    value=re.sub(r"\s+"," ",value)
+    jp="一-龯々〆ヵヶぁ-んァ-ヴー"
+    value=re.sub(rf"(?<=[{jp}])\s+(?=[{jp}])","",value)
+    value=re.sub(rf"(?<=[{jp}])\s+(?=[A-Za-z])","",value)
+    value=re.sub(rf"(?<=[A-Za-z])\s+(?=[{jp}])","",value)
+    value=re.sub(r"\s+([、。・（）()])",r"\1",value)
+    value=re.sub(r"([（(])\s+",r"\1",value)
+    return value
+
+
 def make_excel(results):
     wb = Workbook()
     sh = wb.active
@@ -944,6 +959,11 @@ def make_excel(results):
         detail_headers = ["大項目","項目名","仕様","数量","単位","単価","金額","備考","PDFページ"]
         ws.append(detail_headers)
         for row in r["rows"]:
+            # Normalize names at the final Excel boundary, including cached or
+            # alternative OCR paths. Preserve all numeric fields unchanged.
+            if r["type"]=="SANTEN" and len(row)>1:
+                row=list(row)
+                row[1]=normalize_santen_excel_name(row[1])
             ws.append(row)
 
         style_header(ws, max_col=len(detail_headers))
